@@ -557,6 +557,14 @@ read_when:
   (`DexColorRenderingTests.withSprites`, `DexFlavorTextRenderingTests.close(_:)`). 스윕: 다른 `@MainActor`
   테스트의 동기 setUp/tearDown 은 이미 이 둘 중 하나만 쓴다. 회귀 가드: `macos-15` CI의 테스트 컴파일.
   (CI 실패: 2026-10-06.)
+- **CI 의 OCR 은 로컬보다 부정확하다 — Vision 으로 화면을 읽는 테스트는 오독을 견디게 쓴다.** #161 의
+  도감 설명 렌더링 테스트가 CI(macOS 15 러너)에서 본문 크기 글자를 "Sample"→"Samole", "Pokédex"→"Pokedey"
+  로 읽어 실패했다. **왜 못 걸렀나:** 로컬 Retina·최신 Vision 에서는 오독이 없었다. 캡처를 0.6배로 낮추면
+  로컬에서도 같은 오독이 재현된다(6개 중 1개만 통과). 캡처 배율만 올리는 건 해결이 아니다 —
+  `cacheDisplay` 는 창 배율로 이미 래스터화된 글자를 다시 샘플링할 뿐이다. → OCR 전에 3배로 확대하고,
+  `customWords` 로 찾는 단어를 알려 주고, "있어야 할" 문자열만 글자 15% 오차를 허용한다("없어야 할" 문자열은
+  정확 일치). 픽스처 문장은 첫 단어부터 서로 다르게 둔다. 이렇게 바꾼 뒤 0.6배 5/6, 0.8·1·2배 6/6 통과,
+  화면 결함 주입 7종은 여전히 모두 실패함을 확인했다(`DexFlavorTextRenderingTests`). (CI 실패: 2026-10-06.)
 - **SwiftUI `View`/`App` 경계는 `@MainActor` 를 명시한다.** Swift 6.3 은 `body` 밖의 `@ViewBuilder` helper·
   동기 클로저를 nonisolated 로 검사해, `@MainActor` `@Observable` store 접근이 수십 개의 오류로 연쇄된다.
   개별 프로퍼티에 `MainActor.assumeIsolated` 를 흩뿌리지 말고 UI 타입 선언 한 곳에 격리를 둔다.

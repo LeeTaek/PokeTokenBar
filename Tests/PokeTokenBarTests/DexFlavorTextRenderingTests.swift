@@ -143,6 +143,60 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         return (host, window)
     }
 
+    /// OCR misreads body-size text at low resolution ("Sample" as "Samole"), and CI renders at a lower
+    /// scale than a Retina Mac, so its reads are worse. Capture at 2×, enlarge before OCR, prime Vision with
+    /// the words a test looks for, and let text that must be present differ by a few misread letters.
+    private static let captureScale: CGFloat = 2
+    private static let ocrScale: CGFloat = 3
+
+    private func capture(_ host: NSView) throws -> CGImage {
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(host.bounds.width * Self.captureScale),
+            pixelsHigh: Int(host.bounds.height * Self.captureScale), bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = host.bounds.size
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = try XCTUnwrap(bitmap.cgImage)
+        let width = Int(host.bounds.width * Self.ocrScale), height = Int(host.bounds.height * Self.ocrScale)
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return try XCTUnwrap(context.makeImage())
+    }
+
+    private func recognize(_ host: NSView, words: [String], languages: [String]) throws -> [VNRecognizedTextObservation] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = languages
+        request.usesLanguageCorrection = true
+        request.customWords = words.flatMap { $0.split { !$0.isLetter }.map(String.init) }
+        try VNImageRequestHandler(cgImage: capture(host)).perform([request])
+        return request.results ?? []
+    }
+
+    /// End offset of the closest match of `needle` inside `haystack` (both normalized), if at most 15% of
+    /// its characters differ: OCR slips such as "Samole" still match, different strings do not.
+    private func fuzzyMatch(_ needle: String, in haystack: String) -> Int? {
+        let n = Array(needle), h = Array(haystack)
+        guard !n.isEmpty, !h.isEmpty else { return nil }
+        let budget = max(1, n.count * 15 / 100)
+        var previous = [Int](repeating: 0, count: h.count + 1)
+        for i in 1...n.count {
+            var current = [Int](repeating: i, count: h.count + 1)
+            for j in 1...h.count {
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (n[i - 1] == h[j - 1] ? 0 : 1))
+            }
+            previous = current
+        }
+        guard let best = previous.indices.min(by: { previous[$0] < previous[$1] }), previous[best] <= budget else {
+            return nil
+        }
+        return best
+    }
+
     /// Reads the page back with OCR until every expected string is on screen and every absent one is
     /// gone, or five seconds pass. Returns the last text and what still did not match.
     private func waitForScreen(_ host: NSView, expecting expected: [String], absent: [String] = [],
@@ -152,16 +206,11 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         var mismatched = expected + absent
         repeat {
             try await Task.sleep(for: .milliseconds(50))
-            host.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-            host.cacheDisplay(in: host.bounds, to: bitmap)
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.recognitionLanguages = languages
-            try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
-            text = request.results?.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ") ?? ""
+            let observations = try recognize(host, words: expected + absent, languages: languages)
+            text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
             let screen = normalized(text)
-            mismatched = expected.filter { !screen.contains(normalized($0)) }
+            // Text that must be present tolerates misread letters; text that must be gone is matched exactly.
+            mismatched = expected.filter { fuzzyMatch(normalized($0), in: screen) == nil }
                 + absent.filter { screen.contains(normalized($0)) }
         } while !mismatched.isEmpty && ContinuousClock.now < deadline
         return (text, mismatched)
@@ -178,15 +227,9 @@ final class DexFlavorTextRenderingTests: XCTestCase {
     private func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
 
     /// Center of the first OCR line containing `text`, in the host's (window's) coordinates.
-    private func locate(_ text: String, in host: NSView) throws -> NSPoint? {
-        host.layoutSubtreeIfNeeded()
-        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
-        let box = request.results?.first {
-            normalized($0.topCandidates(1).first?.string ?? "") == normalized(text)
+    private func locate(_ text: String, in host: NSView, languages: [String] = ["en-US"]) throws -> NSPoint? {
+        let box = try recognize(host, words: [text], languages: languages).first {
+            fuzzyMatch(normalized(text), in: normalized($0.topCandidates(1).first?.string ?? "")) != nil
         }?.boundingBox
         return box.map { NSPoint(x: $0.midX * host.bounds.width, y: $0.midY * host.bounds.height) }
     }
@@ -234,7 +277,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         // The failure stays inside the species data card, above the move list.
         let text = normalized(screen.text)
         let positions = [l.speciesData, l.dexFlavorFailed, moveList].compactMap {
-            text.range(of: normalized($0))?.lowerBound
+            fuzzyMatch(normalized($0), in: text)
         }
         XCTAssertEqual(positions.count, 3, screen.text)
         XCTAssertEqual(positions, positions.sorted(), screen.text)
@@ -306,7 +349,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
                                              languages: languages)
         XCTAssertEqual(screen.mismatched, [], screen.text)
 
-        try await click(window, at: XCTUnwrap(locate(l.dexFlavorShowAll, in: host)))
+        try await click(window, at: XCTUnwrap(locate(l.dexFlavorShowAll, in: host, languages: languages)))
         screen = try await waitForScreen(host, expecting: [l.dexFlavorTitle, l.dexFlavorEnglishFallback, flavorSentence],
                                          absent: [l.speciesData], languages: languages)
         XCTAssertEqual(screen.mismatched, [], screen.text)
@@ -315,7 +358,8 @@ final class DexFlavorTextRenderingTests: XCTestCase {
     /// "All Pokédex entries" opens every version oldest first; Back returns to the same detail page —
     /// still mounted, at the same scroll position.
     func testAllEntriesPageListsEveryVersionOldestFirstAndBackRestoresTheDetail() async throws {
-        let texts = ["The oldest entry text", "The middle entry text", "The newest entry text"]
+        // Different first words, so a tolerant match cannot mistake one entry for another.
+        let texts = ["Amber entry text", "Cobalt entry text", "Jade entry text"]
         let all = DexEntries(entries: [
             DexFlavorText(versionKey: "red", versionID: 1, versionLabel: "Red", text: texts[0]),
             DexFlavorText(versionKey: "x", versionID: 23, versionLabel: "X", text: texts[1]),
@@ -346,7 +390,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
                                          absent: [l.speciesData, l.actualStats])
         XCTAssertEqual(screen.mismatched, [], screen.text)
         let page = normalized(screen.text)
-        let positions = texts.compactMap { page.range(of: normalized($0))?.lowerBound }
+        let positions = texts.compactMap { fuzzyMatch(normalized($0), in: page) }
         XCTAssertEqual(positions.count, 3, screen.text)
         XCTAssertEqual(positions, positions.sorted(), "oldest first: \(screen.text)")
 
