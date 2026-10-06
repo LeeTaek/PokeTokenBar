@@ -64,28 +64,30 @@ private let flavorSentence = "Sample entry for the newest version"
 
 @MainActor
 final class DexFlavorTextRenderingTests: XCTestCase {
-    private var cleanup: [URL] = []
-    private var spriteDirectories: [URL] = []
+    /// Every temporary file lives here. CI's Swift 6.1 runs the synchronous tearDown nonisolated, so it
+    /// may only touch Sendable constants (see defect-log); the main-actor sprite cache is cleaned in `close(_:)`.
+    private let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("flavor-render-\(UUID().uuidString)", isDirectory: true)
+    private var spriteDirectory: URL { directory.appendingPathComponent("sprites", isDirectory: true) }
 
-    /// Like the other rendering tests, leave the shared sprite cache as it was: its entries are keyed
-    /// by file path, and these temporary paths would otherwise stay behind in its 64 slots.
-    override func tearDown() {
-        for directory in spriteDirectories {
-            for animated in [false, true] {
-                let file = SpriteStore.cacheKey(speciesID: 25, animated: animated, shiny: false) + (animated ? ".gif" : ".png")
-                SpriteLoader.imageCache.removeObject(forKey: directory.appendingPathComponent(file).path as NSString)
-            }
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// Closes the window and, like the other rendering tests, leaves the shared sprite cache as it was:
+    /// its entries are keyed by file path, and these temporary paths would otherwise stay in its 64 slots.
+    private func close(_ window: NSWindow) {
+        window.close()
+        for animated in [false, true] {
+            let file = SpriteStore.cacheKey(speciesID: 25, animated: animated, shiny: false) + (animated ? ".gif" : ".png")
+            SpriteLoader.imageCache.removeObject(forKey: spriteDirectory.appendingPathComponent(file).path as NSString)
         }
-        spriteDirectories = []
-        cleanup.forEach { try? FileManager.default.removeItem(at: $0) }
-        cleanup = []
-        super.tearDown()
     }
 
     private func makeStore(language: AppLanguage = .en, details: any PokemonDetailProviding,
                            flavor: any PokemonFlavorTextProviding) throws -> CompanionStore {
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("flavor-render-\(UUID()).json")
-        cleanup.append(file)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("\(UUID().uuidString).json")
         var state = CompanionState()
         state.language = language
         state.dex = [DexEntry(baseID: 25, finalID: 25, chainOrder: [25], rarity: .common,
@@ -97,10 +99,8 @@ final class DexFlavorTextRenderingTests: XCTestCase {
 
     /// Seeds the header sprite so the detail page never downloads one.
     private func offlineSprites() throws -> SpriteStore {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("flavor-sprites-\(UUID())")
+        let directory = spriteDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        cleanup.append(directory)
-        spriteDirectories.append(directory)
         let image = NSImage(size: NSSize(width: 96, height: 96))
         image.lockFocus()
         NSColor.gray.setFill()
@@ -170,7 +170,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
     private func screenText(of store: CompanionStore, expecting expected: [String],
                             languages: [String] = ["en-US"]) async throws -> (text: String, missing: [String]) {
         let (host, window) = try mount(store)
-        defer { window.close() }
+        defer { close(window) }
         let screen = try await waitForScreen(host, expecting: expected, languages: languages)
         return (screen.text, screen.mismatched)
     }
@@ -258,7 +258,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         let store = try makeStore(details: details, flavor: ScriptedFlavor([.success(entries())]))
         let request = store.flavorTextRequest(speciesID: 25)
         let (host, window) = try mount(store)
-        defer { window.close() }
+        defer { close(window) }
         try await waitUntil { store.flavorTextsByRequest[request] != nil }
         XCTAssertNotNil(store.flavorTextsByRequest[request], "entries must not wait for battle details")
         XCTAssertNil(store.pokemonDetailsByID[25])
@@ -279,7 +279,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         await store.loadFlavorTexts(speciesID: 25)
         let l = store.l
         let (host, window) = try mount(store)
-        defer { window.close() }
+        defer { close(window) }
         var screen = try await waitForScreen(host, expecting: [
             "Sword", flavorSentence, l.dexFlavorShowAll, l.dexFlavorFailed, l.retry,
         ])
@@ -301,7 +301,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         let l = store.l
         let languages = ["pt-BR", "en-US"]
         let (host, window) = try mount(store)
-        defer { window.close() }
+        defer { close(window) }
         var screen = try await waitForScreen(host, expecting: [l.dexFlavorEnglishFallback, flavorSentence, l.dexFlavorShowAll],
                                              languages: languages)
         XCTAssertEqual(screen.mismatched, [], screen.text)
@@ -324,7 +324,7 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         let store = try makeStore(details: LoadedDetails(), flavor: ScriptedFlavor([.success(all)]))
         let l = store.l
         let (host, window) = try mount(store, height: 520)
-        defer { window.close() }
+        defer { close(window) }
         try await waitUntil {
             store.pokemonDetailsByID[25] != nil && store.flavorTextsByRequest[store.flavorTextRequest(speciesID: 25)] != nil
         }

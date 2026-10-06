@@ -48,17 +48,17 @@ private actor ControlledFlavorProvider: PokemonFlavorTextProviding {
 
 @MainActor
 final class DexFlavorTextStoreTests: XCTestCase {
-    private var files: [URL] = []
+    /// A Sendable constant: CI's Swift 6.1 runs the synchronous tearDown nonisolated (see defect-log).
+    private let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("flavor-store-\(UUID().uuidString)", isDirectory: true)
 
-    override func tearDown() {
-        files.forEach { try? FileManager.default.removeItem(at: $0) }
-        files = []
-        super.tearDown()
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
     }
 
     private func makeStore(_ provider: ControlledFlavorProvider, language: AppLanguage = .ko) -> CompanionStore {
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("flavor-store-\(UUID()).json")
-        files.append(file)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("\(UUID().uuidString).json")
         let store = CompanionStore(provider: OfflineLineProvider(), flavorProvider: provider, fileURL: file)
         store.setLanguage(language)
         return store
