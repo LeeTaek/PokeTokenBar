@@ -670,6 +670,28 @@ read_when:
   (출발할 때 봐야 할 시계를 도착해서 보는 격). 가드를 넣을 땐 그 함수 위의 await 까지 거슬러 확인하고,
   회귀 테스트도 **그 await 를 실제로 지나는 진입점**으로 써라 — `hatch(baseID:)` 경로 테스트는
   `chooseBase()` 를 안 지나 통과하면서 아무것도 지키지 않았다(`testImportDuringSpeciesRollDiscardsTheHatch`).
+- **Moving a request from view state into the store changes what is reused and what is cancelled —
+  decide both again, and name the request's identity.** The first Pokédex-entry design (#161) kept the
+  result in view `@State` behind `.task(id: species.id)`; neither the design nor its tests said what
+  identifies a request or when a response may be applied (they passed one language and never changed
+  it). There the gap was latent: changing the language means opening Settings, which unmounts the page.
+  Moving the state into `CompanionStore` — so a failure stays inside the description area and a revisit
+  reuses the result — made it reachable: the retry button's `Task {}` outlives the page, so a Korean response can
+  land after the switch to English. The move also changed (1) reuse: the client never cached REST
+  (slug-labelled) results, but a store dictionary would have served them forever; (2) cancellation: the
+  page's `.task` cancelled the request, the client's catch-all turned that into a REST fallback, and a
+  store that skips "in flight" requests leaves a reopened page waiting on a cancelled one. Rules: key the
+  request by every input that changes the response (species + language), capture it before the first
+  await and re-check it before storing success *and* failure; let the store own the in-flight task so
+  pages join it instead of cancelling it (the `dexNameRequests` precedent); carry a flag on results that
+  must not be final (`DexEntries.isDegraded`). One out-of-order test is not enough — with the landing
+  guard in place, a species-only cache key still passes it — so each mechanism has its own test, each
+  checked by fault injection: `testStaleLanguageSuccessIsDroppedWhicheverResponseArrivesFirst`,
+  `testStaleLanguageFailureIsDropped`, `testEachLanguageKeepsItsOwnEntriesAcrossSwitches`,
+  `testAnotherLanguageStartsItsOwnRequestWhileTheFirstIsPending`,
+  `testReopeningJoinsTheRequestTheClosedPageStarted`. Sweep: flavor text is the only per-language
+  PokéAPI request; species/metadata names cache every language, and `DexEntryRow` already keys its task
+  by language.
 
 ## 프로세스·인스턴스
 
