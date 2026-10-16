@@ -323,18 +323,22 @@ final class DexFlavorTextRenderingTests: XCTestCase {
         let l = store.l
         let (host, window) = try mount(store)
         defer { close(window) }
+        // The slug label alone is a short accent-colored word that OCR drops under load; the entry text
+        // and the retry row are what show the entry survived, and the store says which label it carries.
         var screen = try await waitForScreen(host, expecting: [
-            "Sword", flavorSentence, l.dexFlavorShowAll, l.dexFlavorFailed, l.retry,
+            flavorSentence, l.dexFlavorShowAll, l.dexFlavorFailed, l.retry,
         ])
         XCTAssertEqual(screen.mismatched, [], screen.text)
-        XCTAssertTrue(store.failedFlavorTextRequests.contains(store.flavorTextRequest(speciesID: 25)),
+        let request = store.flavorTextRequest(speciesID: 25)
+        XCTAssertTrue(store.failedFlavorTextRequests.contains(request),
                       "the page must have refetched the degraded result on entry")
+        XCTAssertEqual(store.flavorTextsByRequest[request]?.entries.last?.versionLabel, "Sword")
 
         try await click(window, at: XCTUnwrap(locate(l.retry, in: host)))
         screen = try await waitForScreen(host, expecting: ["Localized Sword", flavorSentence],
                                          absent: [l.dexFlavorFailed])
         XCTAssertEqual(screen.mismatched, [], screen.text)
-        XCTAssertFalse(store.flavorTextsByRequest[store.flavorTextRequest(speciesID: 25)]?.isDegraded ?? true)
+        XCTAssertFalse(store.flavorTextsByRequest[request]?.isDegraded ?? true)
     }
 
     /// PokéAPI has no Portuguese entries; both the card and the entries page say why the text is English.
